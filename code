@@ -1,0 +1,109 @@
+!pip install open_clip_torch pillow tqdm matplotlib requests
+
+import torch
+import open_clip
+import numpy as np
+import requests
+from PIL import Image, UnidentifiedImageError
+import matplotlib.pyplot as plt
+from io import BytesIO
+from tqdm import tqdm
+from google.colab import files
+
+#Configuração do modelo CLIP
+device = "cuda" if torch.cuda.is_available() else "cpu"
+model, preprocess, _ = open_clip.create_model_and_transforms('ViT-B-32', pretrained='openai')
+model = model.to(device)
+print("✅ Modelo CLIP carregado:", 'ViT-B-32')
+
+
+#Banco de imagens
+image_urls = [
+    "https://static.prospin.com.br/media/catalog/product/cache/405628f615b5edf579edd0ef4cc16c7a/g/w/gw9195-tenis-adidas-grand-court-2-0-masc-branco-e-preto.jpg", # tênis
+    "https://victorinox.vteximg.com.br/arquivos/ids/164726-1140-1140/WRW_01-0643-121_S_PO.jpg?v=637570611101530000", # relógio
+    "https://mpozenato.fbitsstatic.net/img/p/bicicleta-gps-aro-26-aco-21-marchas-dupla-suspensao-freio-v-brake-preto-laranja-colli-bike-120062/285864.jpg?w=1000&h=1000&v=no-value", # bicicleta
+    "https://http2.mlstatic.com/D_NQ_NP_695927-MLB70907923932_082023-O-kit-5-camiseta-masculina-basica-algodo-301-premium-atacado.webp", # camiseta
+    "https://images.kabum.com.br/produtos/fotos/564916/notebook-gamer-acer-nitro-v15-intel-core-i5-13420h-8gb-ram-geforce-rtx-3050-ssd-512gb-15-6-fhd-ips-144hz-windows-11-preto-anv15-51-58az_1715197002_gg.jpg",   # laptop
+    "https://mediacdn.simonetti.com.br/media/catalog/product/cache/4e3066644e36ce4186a70587d738adc3/8/5/85993.jpg", # celular
+    "https://lotusoculos.fbitsstatic.net/img/p/armacao-de-oculos-de-grau-masculino-london-8025-preto-haste-detalhe-cinza-c1-90721/277285-3.jpg?w=589&h=736&v=202509301051", # óculos
+]
+
+
+#Baixar e processar imagens
+print("Baixando imagens de referência...")
+bank_images, bank_tensors = [], []
+for url in tqdm(image_urls):
+    try:
+        response = requests.get(url, timeout=10)
+        img = Image.open(BytesIO(response.content)).convert("RGB")
+        bank_images.append(img)
+        img_t = preprocess(img).unsqueeze(0).to(device)
+        bank_tensors.append(img_t)
+    except UnidentifiedImageError:
+        print(f"Erro ao carregar imagem: {url}")
+
+bank_tensors = torch.cat(bank_tensors, dim=0)
+
+#Extrair embeddings das imagens base
+with torch.no_grad():
+    bank_features = model.encode_image(bank_tensors)
+    bank_features /= bank_features.norm(dim=-1, keepdim=True)
+
+print("Banco de imagens pronto com", len(bank_images), "itens.")
+
+
+#Função de busca visual
+def buscar_similares(query_img_path, top_k=5):
+    query_img = Image.open(query_img_path).convert("RGB")
+    img_t = preprocess(query_img).unsqueeze(0).to(device)
+    with torch.no_grad():
+        query_feat = model.encode_image(img_t)
+        query_feat /= query_feat.norm(dim=-1, keepdim=True)
+
+    sims = (bank_features @ query_feat.T).squeeze().cpu().numpy()
+    indices = np.argsort(sims)[::-1][:top_k]
+
+    cols = top_k + 1
+    plt.figure(figsize=(3*cols, 3))
+    plt.subplot(1, cols, 1)
+    plt.imshow(query_img)
+    plt.title("📸 Imagem enviada")
+    plt.axis("off")
+
+    for i, idx in enumerate(indices, start=2):
+        plt.subplot(1, cols, i)
+        plt.imshow(bank_images[idx])
+        plt.title(f"Similaridade: {sims[idx]:.2f}")
+        plt.axis("off")
+    plt.show()
+
+
+#criação de menu
+def menu():
+    while True:
+        print("\n===== MENU =====")
+        print("1️⃣  Enviar imagem e buscar similares")
+        print("2️⃣  Mostrar banco de imagens base")
+        print("3️⃣  Encerrar programa")
+        opcao = input("Escolha: ")
+
+        if opcao == "1":
+            uploaded = files.upload()
+            for fname in uploaded.keys():
+                buscar_similares(fname, top_k=5)
+        elif opcao == "2":
+            print("Imagens do banco base:")
+            plt.figure(figsize=(15,3))
+            for i, img in enumerate(bank_images):
+                plt.subplot(1, len(bank_images), i+1)
+                plt.imshow(img)
+                plt.axis("off")
+            plt.show()
+        elif opcao == "3":
+            print("Encerrando o programa...")
+            break
+        else:
+            print("Opção inválida.")
+
+#Execução
+menu()
